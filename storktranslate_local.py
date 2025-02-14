@@ -217,39 +217,114 @@ def main():
                 zh_title = translator.translate(paper['title'])
                 zh_abstract = translator.translate(abstract) if abstract else "无可用摘要"
 
-                # 构建内容
+                # 构建内容（移除作者显示）
                 all_translations.append(f"""
-                <div style="margin-bottom: 2rem; padding: 1rem; border-left: 4px solid #2196F3;">
-                    <h3 style="color: #2c3e50; margin-top: 0;">{zh_title}</h3>
-                    <p><strong>📖 原文标题:</strong> {paper['title']}</p>
-                    <p><strong>👥 作者:</strong> {paper['authors']} ({paper['year']})</p>
-                    <p><strong>🏛️ 期刊:</strong> {paper['journal']} (IF: {paper['impact_factor']})</p>
-                    <p><strong>📄 摘要:</strong> {zh_abstract}</p>
-                    <p style="font-size: 0.9em; color: #666;">
-                        <a href="https://pubmed.ncbi.nlm.nih.gov/{paper['pmid']}" target="_blank">PubMed</a> | 
-                        <a href="https://doi.org/{paper['doi']}" target="_blank">全文链接</a>
-                    </p>
+                <div style="
+                    margin-bottom: 2rem;
+                    padding: 1.5rem;
+                    background: #f8faff;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 12px rgba(28,87,223,0.1);
+                    border-left: 4px solid #1a73e8;
+                ">
+                    <h3 style="
+                        color: #1a3d6d;
+                        margin: 0 0 0.8rem 0;
+                        font-size: 1.1rem;
+                        line-height: 1.4;
+                    ">{zh_title}</h3>
+                    <div style="color: #4a5568; line-height: 1.6;">
+                        <p style="margin: 0.4rem 0;">
+                            <span style="font-weight: 600;">📖 原文标题:</span> 
+                            <span style="color: #2d3748;">{paper['title']}</span>
+                        </p>
+                        <p style="margin: 0.4rem 0;">
+                            <span style="font-weight: 600;">🏛️ 期刊:</span> 
+                            {paper['journal']} (IF: {paper['impact_factor']})
+                        </p>
+                        <div style="
+                            margin: 1rem 0;
+                            padding: 0.8rem;
+                            background: white;
+                            border-radius: 6px;
+                            border: 1px solid #e2e8f0;
+                        ">
+                            <span style="font-weight: 600;">📄 摘要:</span> 
+                            <div style="color: #4a5568; margin-top: 0.4rem;">
+                                {zh_abstract}
+                            </div>
+                        </div>
+                        <div style="margin-top: 1rem;">
+                            <a href="https://pubmed.ncbi.nlm.nih.gov/{paper['pmid']}" 
+                               target="_blank"
+                               style="
+                                   display: inline-block;
+                                   padding: 6px 12px;
+                                   background: #1a73e8;
+                                   color: white;
+                                   border-radius: 4px;
+                                   text-decoration: none;
+                                   margin-right: 8px;
+                               ">PubMed</a>
+                            <a href="https://doi.org/{paper['doi']}" 
+                               target="_blank"
+                               style="
+                                   display: inline-block;
+                                   padding: 6px 12px;
+                                   background: #38a169;
+                                   color: white;
+                                   border-radius: 4px;
+                                   text-decoration: none;
+                               ">Full Text</a>
+                        </div>
+                    </div>
                 </div>
                 """)
 
         if all_translations:
             html_content = f"""
             <html>
-                <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: auto;">
-                    <h1 style="color: #2c3e50; border-bottom: 2px solid #2196F3; padding-bottom: 0.5rem;">
-                        📰 今日文献推送 ({len(all_translations)}篇)
-                    </h1>
+                <body style="
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                    max-width: 700px;
+                    margin: 0 auto;
+                    padding: 2rem 1rem;
+                    background-color: #f7fafc;
+                ">
+                    <header style="text-align: center; margin-bottom: 2.5rem;">
+                        <h1 style="
+                            color: #1a365d;
+                            margin: 0 0 0.5rem 0;
+                            font-size: 1.8rem;
+                            display: flex;
+                            align-items: center;
+                            gap: 0.8rem;
+                            justify-content: center;
+                        ">
+                            <span style="
+                                background: #1a73e8;
+                                color: white;
+                                padding: 6px 12px;
+                                border-radius: 6px;
+                            ">📰 今日文献</span>
+                            <span>推送 ({len(all_translations)}篇)</span>
+                        </h1>
+                    </header>
                     {"".join(all_translations)}
-                    <footer style="margin-top: 2rem; text-align: center; color: #666; font-size: 0.9em;">
-                        🚀 由文献鸟助手自动生成 | 📧 有问题请联系 {EMAIL}
+                    <footer style="
+                        margin-top: 3rem;
+                        text-align: center;
+                        color: #718096;
+                        font-size: 0.85rem;
+                        padding-top: 1.5rem;
+                        border-top: 1px solid #e2e8f0;
+                    ">
+                        🚀 由论文助手自动生成 | 📧 反馈请联系 {EMAIL}
                     </footer>
                 </body>
             </html>
             """
             send_summary_email(html_content)
-        else:
-            print("ℹ️ 今日无新论文需要处理")
-
     except Exception as e:
         print(f"\n❌ 发生严重错误: {str(e)}")
     finally:
@@ -260,7 +335,6 @@ def main():
             except:
                 pass
         print("\n=== 🏁 运行结束 ===")
-
 
 if __name__ == "__main__":
     main()
