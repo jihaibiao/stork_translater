@@ -17,123 +17,110 @@ from tenacity import retry, stop_after_attempt, wait_exponential, wait_fixed
 import ssl
 import certifi
 
-# ==== 核心修复部分 ====
-
+# ==== 环境变量配置 ====
 os.environ.update({
     'GMAIL_ADDRESS': 'jihaibiao012@gmail.com',
     'GMAIL_APP_PASSWORD': 'hbxaosexacavrars',
-    'TENCENT_APP_ID': 'AKIDGOJ7nJl00oa9VeaMtCF8sPksseBTWLwI',
-    'TENCENT_APP_KEY': '93jAMK7lDSSEl25tSntkNaidTHvMIF5j'
+    'BAIDU_APP_ID': '20250214002273327',  # 替换为你的百度APP ID
+    'BAIDU_SECRET_KEY': 'UszzWMkFZFzR8YmpRzPB'  # 替换为你的百度密钥
 })
 
-# 验证变量（确保后续代码正确读取）
+# 验证环境变量
 EMAIL = os.getenv('GMAIL_ADDRESS')
 PASSWORD = os.getenv('GMAIL_APP_PASSWORD')
-assert EMAIL and PASSWORD, "环境变量未正确设置"
+BAIDU_APP_ID = os.getenv('BAIDU_APP_ID')
+BAIDU_SECRET_KEY = os.getenv('BAIDU_SECRET_KEY')
+assert all([EMAIL, PASSWORD, BAIDU_APP_ID, BAIDU_SECRET_KEY]), "环境变量未正确设置"
 
-# ==== 配置信息 ====
+# ==== 其他配置保持不变 ====
 IMAP_SERVER = 'imap.gmail.com'
 SMTP_SERVER = 'smtp.gmail.com'
-IMAP_TIMEOUT = 60  # 增加IMAP超时时间
+IMAP_TIMEOUT = 60
 Entrez.email = EMAIL
 
-# 正确设置 SSL 上下文
 ssl._create_default_https_context = ssl._create_unverified_context
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-class TencentTranslator:
-    """腾讯翻译API封装类 (包含SSL证书验证和详细错误处理)"""
+class BaiduTranslator:
+    """百度翻译API封装类"""
 
-    def __init__(self, app_id, app_key):
-        if not app_id or not app_key:
-            raise ValueError("腾讯翻译API需要有效的app_id和app_key")
+    def __init__(self, app_id, secret_key):
+        if not app_id or not secret_key:
+            raise ValueError("需要有效的百度翻译API凭证")
 
         self.app_id = app_id
-        self.app_key = app_key
-        self.base_url = "https://api.ai.qq.com/fcgi-bin/nlp/nlp_texttranslate"
+        self.secret_key = secret_key
+        self.base_url = "https://fanyi-api.baidu.com/api/trans/vip/translate"
 
-        # 创建带证书验证的会话
+        # 配置带证书验证的会话
         self.session = requests.Session()
-        self.session.verify = certifi.where()  # 使用certifi的CA证书包
-        self.timeout = 15  # 请求超时时间
+        self.session.verify = certifi.where()
+        self.timeout = 15
 
-    def _get_sign(self, params):
-        """生成请求签名 (修正排序和格式问题)"""
-        # 确保参数排序符合腾讯API要求
-        sorted_params = sorted(params.items(), key=lambda x: x[0])
-        param_str = '&'.join([f"{k}={v}" for k, v in sorted_params])
-        sign_str = f"{param_str}&app_key={self.app_key}"
-
-        # 计算MD5时使用UTF-8编码
-        return hashlib.md5(sign_str.encode('utf-8')).hexdigest().upper()
+    def _generate_sign(self, query, salt):
+        """生成百度API签名"""
+        sign_str = f"{self.app_id}{query}{salt}{self.secret_key}"
+        return hashlib.md5(sign_str.encode('utf-8')).hexdigest()
 
     @retry(stop=stop_after_attempt(3),
            wait=wait_exponential(multiplier=1, min=2, max=10),
            reraise=True)
     def translate(self, text, target_lang='zh', max_length=4500):
-        """执行翻译 (包含详细错误处理)"""
+        """执行翻译"""
         if not text:
             return ""
 
-        # 分割过长的文本 (腾讯API限制5000字节)
+        # 百度API单次请求最大6000字节
         text = text[:max_length]
 
         try:
-            # 1. 准备签名参数
-            params = {
-                'app_id': self.app_id,
-                'time_stamp': str(int(time.time())),
-                'nonce_str': ''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=16)),
-                'text': text,
-                'source': 'en',
-                'target': target_lang
-            }
-            params['sign'] = self._get_sign(params)
+            salt = str(random.randint(32768, 65536))
+            sign = self._generate_sign(text, salt)
 
-            # 2. 发送带证书验证的请求
-            response = self.session.post(
+            params = {
+                'q': text,
+                'from': 'en',
+                'to': target_lang,
+                'appid': self.app_id,
+                'salt': salt,
+                'sign': sign
+            }
+
+            response = self.session.get(
                 self.base_url,
-                data=params,
-                timeout=self.timeout,
-                headers={'Content-Type': 'application/x-www-form-urlencoded'}
+                params=params,
+                timeout=self.timeout
             )
 
-            # 3. 处理响应
             response.raise_for_status()
             result = response.json()
 
-            if result.get('ret') == 0:
-                return result['data']['target_text']
-            else:
-                error_msg = result.get('msg', '未知错误')
-                print(f"腾讯翻译API错误 (代码{result['ret']}): {error_msg}")
-                return text[:200] + "[...]"  # 返回部分原文防止信息丢失
+            if 'error_code' in result:
+                error_msg = result.get('error_msg', '未知错误')
+                print(f"百度翻译错误 (代码{result['error_code']}): {error_msg}")
+                return text[:200] + "[...]"
+
+            return '\n'.join([item['dst'] for item in result['trans_result']])
 
         except requests.exceptions.SSLError as e:
             print(f"SSL验证失败: {str(e)}")
-            print("尝试更新certifi证书包:pip install --upgrade certifi")
             raise
         except requests.exceptions.Timeout:
-            print(f"请求超时 ({self.timeout}s),请检查网络连接")
+            print(f"请求超时 ({self.timeout}s)")
             raise
         except requests.exceptions.RequestException as e:
             print(f"请求失败: {str(e)}")
             raise
         except KeyError as e:
-            print(f"响应数据格式错误,缺少字段: {str(e)}")
-            return text
-        except json.JSONDecodeError:
-            print("响应不是有效JSON格式")
+            print(f"响应格式错误: {str(e)}")
             return text
 
     def close(self):
-        """关闭会话连接"""
         self.session.close()
 
-        # ...处理响应...
-# ==== 关键修改1：为IMAP连接添加超时和重试 ====
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(10))  # 每10秒重试一次，最多3次
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(10))
 def fetch_stork_emails():
     """获取Stork推送的未读邮件（优化超时和重试）"""
     try:
@@ -149,7 +136,7 @@ def fetch_stork_emails():
         print(f"IMAP连接失败: {str(e)}")
         raise
 
-# ==== 关键修改2：增强SMTP错误处理 ====
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def send_summary_email(content):
     """使用Gmail发送汇总邮件（添加详细错误日志）"""
@@ -172,6 +159,7 @@ def send_summary_email(content):
         print(f"邮件发送未知错误: {str(e)}")
         raise
 
+
 def extract_paper_info(msg):
     body = ""
     if msg.is_multipart():
@@ -192,6 +180,7 @@ def extract_paper_info(msg):
 
     return [{'title': match[0].strip(), 'pmid': match[5], 'doi': match[6]} for match in matches]
 
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def get_abstract_from_pubmed(pmid):
     """通过 PubMed API 获取论文摘要"""
@@ -204,6 +193,7 @@ def get_abstract_from_pubmed(pmid):
         print(f"获取摘要失败 (PMID: {pmid}): {str(e)}")
         return "摘要获取失败"
 
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def main():
     try:
@@ -214,7 +204,7 @@ def main():
         mail, email_ids = fetch_stork_emails()
         print(f"连接成功，共找到 {len(email_ids)} 封未读邮件")
 
-        translator = TencentTranslator(os.getenv('TENCENT_APP_ID'), os.getenv('TENCENT_APP_KEY'))
+        translator = BaiduTranslator(BAIDU_APP_ID, BAIDU_SECRET_KEY)
         all_translations = []
 
         # 2. 处理每封邮件
@@ -282,6 +272,7 @@ def main():
             except Exception as e:
                 print(f"关闭 IMAP 连接时出错: {str(e)}")
         print("===== 脚本结束 =====")
+
 
 if __name__ == "__main__":
     main()
