@@ -16,13 +16,14 @@ from Bio import Entrez
 from tenacity import retry, stop_after_attempt, wait_exponential, wait_fixed
 import ssl
 import certifi
+from bs4 import BeautifulSoup
 
 # ==== 环境变量配置 ====
 os.environ.update({
     'GMAIL_ADDRESS': 'jihaibiao012@gmail.com',
     'GMAIL_APP_PASSWORD': 'hbxaosexacavrars',
-    'BAIDU_APP_ID': '20250214002273327',  # 替换为你的百度APP ID
-    'BAIDU_SECRET_KEY': 'UszzWMkFZFzR8YmpRzPB'  # 替换为你的百度密钥
+    'BAIDU_APP_ID': '20250214002273327',
+    'BAIDU_SECRET_KEY': 'UszzWMkFZFzR8YmpRzPB'
 })
 
 # 验证环境变量
@@ -32,7 +33,7 @@ BAIDU_APP_ID = os.getenv('BAIDU_APP_ID')
 BAIDU_SECRET_KEY = os.getenv('BAIDU_SECRET_KEY')
 assert all([EMAIL, PASSWORD, BAIDU_APP_ID, BAIDU_SECRET_KEY]), "环境变量未正确设置"
 
-# ==== 其他配置保持不变 ====
+# ==== 配置信息 ====
 IMAP_SERVER = 'imap.gmail.com'
 SMTP_SERVER = 'smtp.gmail.com'
 IMAP_TIMEOUT = 60
@@ -43,48 +44,36 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class BaiduTranslator:
-    """百度翻译API封装类"""
+    """百度翻译API封装（修复版）"""
 
     def __init__(self, app_id, secret_key):
-        if not app_id or not secret_key:
-            raise ValueError("需要有效的百度翻译API凭证")
-
         self.app_id = app_id
         self.secret_key = secret_key
         self.base_url = "https://fanyi-api.baidu.com/api/trans/vip/translate"
-
-        # 配置带证书验证的会话
         self.session = requests.Session()
         self.session.verify = certifi.where()
         self.timeout = 15
 
     def _generate_sign(self, query, salt):
-        """生成百度API签名"""
         sign_str = f"{self.app_id}{query}{salt}{self.secret_key}"
         return hashlib.md5(sign_str.encode('utf-8')).hexdigest()
 
-    @retry(stop=stop_after_attempt(3),
-           wait=wait_exponential(multiplier=1, min=2, max=10),
-           reraise=True)
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def translate(self, text, target_lang='zh', max_length=4500):
-        """执行翻译"""
         if not text:
             return ""
 
-        # 百度API单次请求最大6000字节
         text = text[:max_length]
+        salt = str(random.randint(32768, 65536))
 
         try:
-            salt = str(random.randint(32768, 65536))
-            sign = self._generate_sign(text, salt)
-
             params = {
                 'q': text,
                 'from': 'en',
                 'to': target_lang,
                 'appid': self.app_id,
                 'salt': salt,
-                'sign': sign
+                'sign': self._generate_sign(text, salt)
             }
 
             response = self.session.get(
@@ -92,186 +81,185 @@ class BaiduTranslator:
                 params=params,
                 timeout=self.timeout
             )
-
             response.raise_for_status()
-            result = response.json()
 
+            result = response.json()
             if 'error_code' in result:
                 error_msg = result.get('error_msg', '未知错误')
-                print(f"百度翻译错误 (代码{result['error_code']}): {error_msg}")
-                return text[:200] + "[...]"
+                raise ValueError(f"百度翻译错误 {result['error_code']}: {error_msg}")
 
-            return '\n'.join([item['dst'] for item in result['trans_result']])
+            return ' '.join([item['dst'] for item in result['trans_result']])
 
-        except requests.exceptions.SSLError as e:
-            print(f"SSL验证失败: {str(e)}")
-            raise
-        except requests.exceptions.Timeout:
-            print(f"请求超时 ({self.timeout}s)")
-            raise
-        except requests.exceptions.RequestException as e:
-            print(f"请求失败: {str(e)}")
-            raise
-        except KeyError as e:
-            print(f"响应格式错误: {str(e)}")
-            return text
-
-    def close(self):
-        self.session.close()
-
-
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(10))
-def fetch_stork_emails():
-    """获取Stork推送的未读邮件（优化超时和重试）"""
-    try:
-        print("正在连接IMAP服务器...")
-        mail = imaplib.IMAP4_SSL(IMAP_SERVER, timeout=IMAP_TIMEOUT)  # 显式设置超时
-        mail.login(EMAIL, PASSWORD)
-        mail.select('inbox')
-        _, data = mail.search(None, 'UNSEEN', '(FROM "support@storkapp.me")')
-        email_ids = data[0].split()
-        print(f"IMAP连接成功，找到 {len(email_ids)} 封未读邮件")
-        return mail, email_ids
-    except Exception as e:
-        print(f"IMAP连接失败: {str(e)}")
-        raise
-
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def send_summary_email(content):
-    """使用Gmail发送汇总邮件（添加详细错误日志）"""
-    try:
-        msg = MIMEText(content, 'html', 'utf-8')
-        msg['Subject'] = Header('每日论文摘要推送', 'utf-8')
-        msg['From'] = Header(f"论文助手 <{EMAIL}>", 'utf-8')
-        msg['To'] = 'jihaibiao012@163.com'
-
-        with smtplib.SMTP(SMTP_SERVER, 587, timeout=30) as server:  # 设置SMTP超时
-            server.ehlo()
-            server.starttls()
-            server.login(EMAIL, PASSWORD)
-            server.sendmail(EMAIL, ['jihaibiao012@163.com'], msg.as_string())
-        print("邮件发送成功！")
-    except smtplib.SMTPException as e:
-        print(f"SMTP协议错误: {str(e)}")
-        raise
-    except Exception as e:
-        print(f"邮件发送未知错误: {str(e)}")
-        raise
+        except Exception as e:
+            print(f"翻译失败: {str(e)}")
+            return f"[翻译失败] {text[:200]}"
 
 
 def extract_paper_info(msg):
+    """论文信息提取（增强正则表达式版）"""
+    # 解析邮件正文
     body = ""
     if msg.is_multipart():
         for part in msg.walk():
-            if part.get_content_type() == "text/plain":
+            content_type = part.get_content_type()
+            if content_type == "text/html":
                 body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
                 break
     else:
         body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
 
-    print("邮件正文内容：", body)  # 调试输出
+    # 使用BeautifulSoup清理内容
+    soup = BeautifulSoup(body, 'html.parser')
+    text = ' '.join(soup.stripped_strings)
 
-    # 改进后的正则表达式
-    pattern = r"([A-Z][^\.]+?\.)\s+by\s+([^\(]+)\s+\((\d{4})\)\s+([^\(]+)\s+\(impact factor:\s+([0-9.]+)\)[^P]*PMID:\s+(\d+)\s+doi:\s+([^\s]+)"
-    matches = re.findall(pattern, body, re.DOTALL)
+    # 调试输出
+    with open("debug_email.txt", "w", encoding="utf-8") as f:
+        f.write(text)
 
-    print("提取到的论文信息：", matches)  # 调试输出
+    # 优化后的正则表达式（精确匹配论文条目）
+    pattern = re.compile(
+        r'(?P<title>[A-Z][^\.]+?\.)\s+by\s+'  # 标题（以大写字母开头，句号结尾）
+        r'(?P<authors>.+?)\s+\('  # 作者
+        r'(?P<year>\d{4})\)\s+'  # 年份
+        r'(?P<journal>.+?)\s+\(impact\s+factor:\s*'
+        r'(?P<impact_factor>\d+\.?\d*)\)'  # 影响因子
+        r'.*?PMID:\s+(?P<pmid>\d+)\s+'  # PMID
+        r'doi:\s+(?P<doi>10\.\S+)',  # DOI（以10.开头）
+        re.DOTALL | re.IGNORECASE
+    )
 
-    return [{'title': match[0].strip(), 'pmid': match[5], 'doi': match[6]} for match in matches]
+    papers = []
+    for match in pattern.finditer(text):
+        papers.append({
+            'title': match.group('title').strip(),
+            'pmid': match.group('pmid'),
+            'doi': match.group('doi'),
+            'authors': match.group('authors'),
+            'year': match.group('year'),
+            'journal': match.group('journal'),
+            'impact_factor': match.group('impact_factor')
+        })
+
+    print(f"提取到 {len(papers)} 篇论文")
+    return papers
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(10))
+def fetch_stork_emails():
+    try:
+        print("🔄 连接IMAP服务器...")
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER, timeout=IMAP_TIMEOUT)
+        mail.login(EMAIL, PASSWORD)
+        mail.select('inbox')
+        _, data = mail.search(None, 'UNSEEN', '(FROM "support@storkapp.me")')
+        email_ids = data[0].split()
+        print(f"✅ 找到 {len(email_ids)} 封未读邮件")
+        return mail, email_ids
+    except Exception as e:
+        print(f"❌ IMAP连接失败: {str(e)}")
+        raise
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def send_summary_email(content):
+    try:
+        msg = MIMEText(content, 'html', 'utf-8')
+        msg['Subject'] = Header('📚 每日论文摘要推送', 'utf-8')
+        msg['From'] = Header(f"论文助手 <{EMAIL}>", 'utf-8')
+        msg['To'] = 'jihaibiao012@163.com'
+
+        with smtplib.SMTP(SMTP_SERVER, 587, timeout=30) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(EMAIL, PASSWORD)
+            server.sendmail(EMAIL, ['jihaibiao012@163.com'], msg.as_string())
+        print("📧 邮件发送成功！")
+    except Exception as e:
+        print(f"❌ 邮件发送失败: {str(e)}")
+        raise
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def get_abstract_from_pubmed(pmid):
-    """通过 PubMed API 获取论文摘要"""
+    """修复摘要获取的decode错误"""
     try:
         handle = Entrez.efetch(db="pubmed", id=pmid, rettype="abstract", retmode="text")
-        abstract = handle.read()
+        abstract = handle.read()  # 直接获取字符串内容
         handle.close()
-        return abstract.strip() if abstract else "未找到摘要"
+        return abstract.strip() or "未找到摘要"
     except Exception as e:
-        print(f"获取摘要失败 (PMID: {pmid}): {str(e)}")
+        print(f"❌ 获取摘要失败 PMID {pmid}: {str(e)}")
         return "摘要获取失败"
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def main():
     try:
-        print("===== 脚本启动 =====")
-
-        # 1. 连接 IMAP 服务器并获取邮件
-        print("尝试连接 IMAP 服务器...")
+        print("\n=== 🚀 论文助手开始运行 ===")
         mail, email_ids = fetch_stork_emails()
-        print(f"连接成功，共找到 {len(email_ids)} 封未读邮件")
-
         translator = BaiduTranslator(BAIDU_APP_ID, BAIDU_SECRET_KEY)
         all_translations = []
 
-        # 2. 处理每封邮件
         for e_id in email_ids:
-            print(f"正在处理邮件 ID: {e_id}")
+            print(f"\n📨 处理邮件 {e_id.decode()}...")
             _, data = mail.fetch(e_id, '(RFC822)')
             msg = email.message_from_bytes(data[0][1])
 
-            # 3. 提取论文信息
-            print("提取论文信息中...")
             papers = extract_paper_info(msg)
-            print(f"提取到 {len(papers)} 篇论文")
+            if not papers:
+                print("⚠️ 未发现有效论文信息")
+                continue
 
-            # 4. 处理每篇论文
             for paper in papers:
-                try:
-                    print(f"正在处理论文: {paper['title']} (PMID: {paper['pmid']})")
+                print(f"\n🔍 处理论文: {paper['title']}")
+                abstract = get_abstract_from_pubmed(paper['pmid'])
 
-                    # 获取摘要
-                    abstract = get_abstract_from_pubmed(paper['pmid'])
-                    print(f"获取到摘要: {abstract[:50]}...")  # 只打印前 50 个字符
+                # 翻译处理
+                zh_title = translator.translate(paper['title'])
+                zh_abstract = translator.translate(abstract) if abstract else "无可用摘要"
 
-                    # 翻译
-                    zh_title = translator.translate(paper['title'])
-                    print(f"翻译后的标题: {zh_title}")
-                    zh_abstract = translator.translate(abstract) if abstract else "无可用摘要"
-                    print(f"翻译后的摘要: {zh_abstract[:50]}...")
+                # 构建内容
+                all_translations.append(f"""
+                <div style="margin-bottom: 2rem; padding: 1rem; border-left: 4px solid #2196F3;">
+                    <h3 style="color: #2c3e50; margin-top: 0;">{zh_title}</h3>
+                    <p><strong>📖 原文标题:</strong> {paper['title']}</p>
+                    <p><strong>👥 作者:</strong> {paper['authors']} ({paper['year']})</p>
+                    <p><strong>🏛️ 期刊:</strong> {paper['journal']} (IF: {paper['impact_factor']})</p>
+                    <p><strong>📄 摘要:</strong> {zh_abstract}</p>
+                    <p style="font-size: 0.9em; color: #666;">
+                        <a href="https://pubmed.ncbi.nlm.nih.gov/{paper['pmid']}" target="_blank">PubMed</a> | 
+                        <a href="https://doi.org/{paper['doi']}" target="_blank">全文链接</a>
+                    </p>
+                </div>
+                """)
 
-                    # 添加到邮件内容
-                    all_translations.append(f"""
-                    <h3>{zh_title}</h3>
-                    <p><b>原文标题:</b> {paper['title']}</p>
-                    <p><b>摘要:</b> {zh_abstract}</p>
-                    <p><b>PMID:</b> {paper['pmid']} | <b>DOI:</b> {paper['doi']}</p>
-                    <hr>
-                    """)
-                except Exception as e:
-                    print(f"处理论文失败: {str(e)}")
-
-        # 5. 发送邮件
         if all_translations:
-            print("生成摘要邮件内容...")
             html_content = f"""
             <html>
-                <body>
-                    <h2>今日 Stork 论文推送摘要 ({len(all_translations)} 篇)</h2>
+                <body style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: auto;">
+                    <h1 style="color: #2c3e50; border-bottom: 2px solid #2196F3; padding-bottom: 0.5rem;">
+                        📰 今日文献推送 ({len(all_translations)}篇)
+                    </h1>
                     {"".join(all_translations)}
+                    <footer style="margin-top: 2rem; text-align: center; color: #666; font-size: 0.9em;">
+                        🚀 由文献鸟助手自动生成 | 📧 有问题请联系 {EMAIL}
+                    </footer>
                 </body>
             </html>
             """
-            print("邮件内容准备完成，准备发送邮件...")
             send_summary_email(html_content)
         else:
-            print("今日无新论文推送")
+            print("ℹ️ 今日无新论文需要处理")
 
     except Exception as e:
-        print(f"!!! 主程序异常: {str(e)} !!!")
-        raise
+        print(f"\n❌ 发生严重错误: {str(e)}")
     finally:
         if 'mail' in locals():
             try:
                 mail.close()
                 mail.logout()
-                print("IMAP 连接已关闭")
-            except Exception as e:
-                print(f"关闭 IMAP 连接时出错: {str(e)}")
-        print("===== 脚本结束 =====")
+            except:
+                pass
+        print("\n=== 🏁 运行结束 ===")
 
 
 if __name__ == "__main__":
