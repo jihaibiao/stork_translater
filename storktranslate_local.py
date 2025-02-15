@@ -19,14 +19,11 @@ import ssl
 import certifi
 from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
-
+# 新增在文件顶部（所有import之后）
+from dotenv import load_dotenv
+load_dotenv()  # 加载本地.env文件
 # ==== 环境变量配置 ====
-os.environ.update({
-    'GMAIL_ADDRESS': 'jihaibiao012@gmail.com',
-    'GMAIL_APP_PASSWORD': 'hbxaosexacavrars',
-    'BAIDU_APP_ID': '20250214002273327',
-    'BAIDU_SECRET_KEY': 'UszzWMkFZFzR8YmpRzPB'
-})
+
 
 # 验证环境变量
 EMAIL = os.getenv('GMAIL_ADDRESS')
