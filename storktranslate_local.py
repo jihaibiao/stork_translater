@@ -1,9 +1,3 @@
-
-
-
-
-
-
 import json
 import os
 import imaplib
@@ -178,52 +172,6 @@ def get_pubmed_details(pmid):
         print(f"❌ 获取PubMed数据失败 PMID {pmid}: {str(e)}")
         return None
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def get_abstract_from_pubmed(pmid):
-    """修复摘要获取的decode错误"""
-    try:
-        handle = Entrez.efetch(db="pubmed", id=pmid, rettype="abstract", retmode="text")
-        abstract = handle.read()  # 直接获取字符串内容
-        handle.close()
-        return abstract.strip() or "未找到摘要"
-    except Exception as e:
-        print(f"❌ 获取摘要失败 PMID {pmid}: {str(e)}")
-        return "摘要获取失败"
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def send_summary_email(content):
-    try:
-        msg = MIMEText(content, 'html', 'utf-8')
-        msg['Subject'] = Header('📚 每日论文摘要推送', 'utf-8')
-        msg['From'] = Header(f"论文助手 <{EMAIL}>", 'utf-8')
-        msg['To'] = 'jihaibiao012@163.com'
-
-        # 使用更稳定的SMTP_SSL连接
-        context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(SMTP_SERVER, 465, timeout=60, context=context) as server:
-            server.login(EMAIL, PASSWORD)
-            server.sendmail(EMAIL, ['jihaibiao012@163.com'], msg.as_string())
-        print("📧 邮件发送成功！")
-    except Exception as e:
-        print(f"❌ 邮件发送失败: {str(e)}")
-        raise
-
-
-
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(10))
-def fetch_stork_emails():
-    try:
-        print("🔄 连接IMAP服务器...")
-        mail = imaplib.IMAP4_SSL(IMAP_SERVER, timeout=IMAP_TIMEOUT)
-        mail.login(EMAIL, PASSWORD)
-        mail.select('inbox')
-        _, data = mail.search(None, 'UNSEEN', '(FROM "support@storkapp.me")')
-        email_ids = data[0].split()
-        print(f"✅ 找到 {len(email_ids)} 封未读邮件")
-        return mail, email_ids
-    except Exception as e:
-        print(f"❌ IMAP连接失败: {str(e)}")
-        raise
 
 def main():
     try:
@@ -333,6 +281,51 @@ def main():
 
 
 # 其他辅助函数保持不变...
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(10))
+def fetch_stork_emails():
+    try:
+        print("🔄 连接IMAP服务器...")
+        mail = imaplib.IMAP4_SSL(IMAP_SERVER, timeout=IMAP_TIMEOUT)
+        mail.login(EMAIL, PASSWORD)
+        mail.select('inbox')
+        _, data = mail.search(None, 'UNSEEN', '(FROM "support@storkapp.me")')
+        email_ids = data[0].split()
+        print(f"✅ 找到 {len(email_ids)} 封未读邮件")
+        return mail, email_ids
+    except Exception as e:
+        print(f"❌ IMAP连接失败: {str(e)}")
+        raise
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def send_summary_email(content):
+    try:
+        msg = MIMEText(content, 'html', 'utf-8')
+        msg['Subject'] = Header('📚 每日论文摘要推送', 'utf-8')
+        msg['From'] = Header(f"论文助手 <{EMAIL}>", 'utf-8')
+        msg['To'] = 'jihaibiao012@163.com'
+
+        # 使用更稳定的SMTP_SSL连接
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(SMTP_SERVER, 465, timeout=60, context=context) as server:
+            server.login(EMAIL, PASSWORD)
+            server.sendmail(EMAIL, ['jihaibiao012@163.com'], msg.as_string())
+        print("📧 邮件发送成功！")
+    except Exception as e:
+        print(f"❌ 邮件发送失败: {str(e)}")
+        raise
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def get_abstract_from_pubmed(pmid):
+    """修复摘要获取的decode错误"""
+    try:
+        handle = Entrez.efetch(db="pubmed", id=pmid, rettype="abstract", retmode="text")
+        abstract = handle.read()  # 直接获取字符串内容
+        handle.close()
+        return abstract.strip() or "未找到摘要"
+    except Exception as e:
+        print(f"❌ 获取摘要失败 PMID {pmid}: {str(e)}")
+        return "摘要获取失败"
 
 if __name__ == "__main__":
     main()
