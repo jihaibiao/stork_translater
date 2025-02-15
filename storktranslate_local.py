@@ -1,3 +1,9 @@
+
+
+
+
+
+
 import json
 import os
 import imaplib
@@ -17,6 +23,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, wait_fixed
 import ssl
 import certifi
 from bs4 import BeautifulSoup
+import xml.etree.ElementTree as ET
 
 # ==== 环境变量配置 ====
 os.environ.update({
@@ -96,8 +103,7 @@ class BaiduTranslator:
 
 
 def extract_paper_info(msg):
-    """论文信息提取（增强正则表达式版）"""
-    # 解析邮件正文
+    """从邮件提取PMID和影响因子"""
     body = ""
     if msg.is_multipart():
         for part in msg.walk():
@@ -108,40 +114,100 @@ def extract_paper_info(msg):
     else:
         body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
 
-    # 使用BeautifulSoup清理内容
     soup = BeautifulSoup(body, 'html.parser')
     text = ' '.join(soup.stripped_strings)
 
-    # 调试输出
-    with open("debug_email.txt", "w", encoding="utf-8") as f:
-        f.write(text)
-
-    # 优化后的正则表达式（精确匹配论文条目）
+    papers = []
     pattern = re.compile(
-        r'(?P<title>[A-Z][^\.]+?\.)\s+by\s+'  # 标题（以大写字母开头，句号结尾）
-        r'(?P<authors>.+?)\s+\('  # 作者
-        r'(?P<year>\d{4})\)\s+'  # 年份
-        r'(?P<journal>.+?)\s+\(impact\s+factor:\s*'
-        r'(?P<impact_factor>\d+\.?\d*)\)'  # 影响因子
-        r'.*?PMID:\s+(?P<pmid>\d+)\s+'  # PMID
-        r'doi:\s+(?P<doi>10\.\S+)',  # DOI（以10.开头）
-        re.DOTALL | re.IGNORECASE
+        r'PMID:\s+(?P<pmid>\d+).*?impact\s+factor:\s*(?P<impact_factor>\d+\.?\d*)',
+        re.DOTALL
     )
 
-    papers = []
     for match in pattern.finditer(text):
         papers.append({
-            'title': match.group('title').strip(),
             'pmid': match.group('pmid'),
-            'doi': match.group('doi'),
-            'authors': match.group('authors'),
-            'year': match.group('year'),
-            'journal': match.group('journal'),
             'impact_factor': match.group('impact_factor')
         })
 
-    print(f"提取到 {len(papers)} 篇论文")
+    print(f"提取到 {len(papers)} 篇论文的PMID和影响因子")
     return papers
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(10))
+def get_pubmed_details(pmid):
+    """从PubMed获取完整文献信息"""
+    try:
+        handle = Entrez.efetch(db="pubmed", id=pmid, retmode="xml")
+        data = handle.read()
+        handle.close()
+
+        root = ET.fromstring(data)
+        article = root.find('.//PubmedArticle')
+
+        # 提取标题
+        title = article.find('.//ArticleTitle').text.strip()
+
+        # 提取作者
+        authors = []
+        for author in article.findall('.//Author'):
+            lastname = author.find('LastName').text if author.find('LastName') is not None else ''
+            forename = author.find('ForeName').text if author.find('ForeName') is not None else ''
+            if lastname or forename:
+                authors.append(f"{forename} {lastname}".strip())
+        authors_str = ", ".join(authors[:3]) + (" et al." if len(authors) > 3 else "")
+
+        # 提取期刊信息
+        journal = article.find('.//Journal/Title').text
+        year = article.find('.//PubDate/Year').text if article.find('.//PubDate/Year') is not None else ''
+
+        # 提取DOI
+        doi = ""
+        for id in article.findall('.//ArticleId'):
+            if id.attrib.get('IdType') == 'doi':
+                doi = id.text
+                break
+
+        return {
+            'title': title,
+            'authors': authors_str,
+            'journal': journal,
+            'year': year,
+            'doi': doi
+        }
+    except Exception as e:
+        print(f"❌ 获取PubMed数据失败 PMID {pmid}: {str(e)}")
+        return None
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def get_abstract_from_pubmed(pmid):
+    """修复摘要获取的decode错误"""
+    try:
+        handle = Entrez.efetch(db="pubmed", id=pmid, rettype="abstract", retmode="text")
+        abstract = handle.read()  # 直接获取字符串内容
+        handle.close()
+        return abstract.strip() or "未找到摘要"
+    except Exception as e:
+        print(f"❌ 获取摘要失败 PMID {pmid}: {str(e)}")
+        return "摘要获取失败"
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def send_summary_email(content):
+    try:
+        msg = MIMEText(content, 'html', 'utf-8')
+        msg['Subject'] = Header('📚 每日论文摘要推送', 'utf-8')
+        msg['From'] = Header(f"论文助手 <{EMAIL}>", 'utf-8')
+        msg['To'] = 'jihaibiao012@163.com'
+
+        # 使用更稳定的SMTP_SSL连接
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(SMTP_SERVER, 465, timeout=60, context=context) as server:
+            server.login(EMAIL, PASSWORD)
+            server.sendmail(EMAIL, ['jihaibiao012@163.com'], msg.as_string())
+        print("📧 邮件发送成功！")
+    except Exception as e:
+        print(f"❌ 邮件发送失败: {str(e)}")
+        raise
+
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(10))
@@ -158,39 +224,6 @@ def fetch_stork_emails():
     except Exception as e:
         print(f"❌ IMAP连接失败: {str(e)}")
         raise
-
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def send_summary_email(content):
-    try:
-        msg = MIMEText(content, 'html', 'utf-8')
-        msg['Subject'] = Header('📚 每日论文摘要推送', 'utf-8')
-        msg['From'] = Header(f"论文助手 <{EMAIL}>", 'utf-8')
-        msg['To'] = 'jihaibiao012@163.com'
-
-        with smtplib.SMTP(SMTP_SERVER, 587, timeout=30) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(EMAIL, PASSWORD)
-            server.sendmail(EMAIL, ['jihaibiao012@163.com'], msg.as_string())
-        print("📧 邮件发送成功！")
-    except Exception as e:
-        print(f"❌ 邮件发送失败: {str(e)}")
-        raise
-
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def get_abstract_from_pubmed(pmid):
-    """修复摘要获取的decode错误"""
-    try:
-        handle = Entrez.efetch(db="pubmed", id=pmid, rettype="abstract", retmode="text")
-        abstract = handle.read()  # 直接获取字符串内容
-        handle.close()
-        return abstract.strip() or "未找到摘要"
-    except Exception as e:
-        print(f"❌ 获取摘要失败 PMID {pmid}: {str(e)}")
-        return "摘要获取失败"
-
 
 def main():
     try:
@@ -210,115 +243,77 @@ def main():
                 continue
 
             for paper in papers:
-                print(f"\n🔍 处理论文: {paper['title']}")
+                print(f"\n🔍 处理PMID: {paper['pmid']}")
+                pubmed_data = get_pubmed_details(paper['pmid'])
+                if not pubmed_data:
+                    continue
+
+                # 获取摘要
                 abstract = get_abstract_from_pubmed(paper['pmid'])
 
                 # 翻译处理
-                zh_title = translator.translate(paper['title'])
+                zh_title = translator.translate(pubmed_data['title'])
                 zh_abstract = translator.translate(abstract) if abstract else "无可用摘要"
 
-                # 构建内容（移除作者显示）
+                # 合并数据
+                full_data = {
+                    **pubmed_data,
+                    **paper,
+                    'abstract': abstract,
+                    'zh_title': zh_title,
+                    'zh_abstract': zh_abstract
+                }
+
+                # 构建内容
                 all_translations.append(f"""
-                <div style="
-                    margin-bottom: 2rem;
-                    padding: 1.5rem;
-                    background: #f8faff;
-                    border-radius: 8px;
-                    box-shadow: 0 2px 12px rgba(28,87,223,0.1);
-                    border-left: 4px solid #1a73e8;
-                ">
-                    <h3 style="
-                        color: #1a3d6d;
-                        margin: 0 0 0.8rem 0;
-                        font-size: 1.1rem;
-                        line-height: 1.4;
-                    ">{zh_title}</h3>
+                <div style="margin-bottom: 2rem; padding: 1.5rem; background: #f8faff; border-radius: 8px; box-shadow: 0 2px 12px rgba(28,87,223,0.1); border-left: 4px solid #1a73e8;">
+                    <h3 style="color: #1a3d6d; margin: 0 0 0.8rem 0; font-size: 1.1rem; line-height: 1.4;">
+                        {full_data['zh_title']}
+                    </h3>
                     <div style="color: #4a5568; line-height: 1.6;">
                         <p style="margin: 0.4rem 0;">
                             <span style="font-weight: 600;">📖 原文标题:</span> 
-                            <span style="color: #2d3748;">{paper['title']}</span>
+                            <span style="color: #2d3748;">{full_data['title']}</span>
+                        </p>
+                        <p style="margin: 0.4rem 0;">
+                            <span style="font-weight: 600;">👥 作者:</span> 
+                            {full_data['authors']}
                         </p>
                         <p style="margin: 0.4rem 0;">
                             <span style="font-weight: 600;">🏛️ 期刊:</span> 
-                            {paper['journal']} (IF: {paper['impact_factor']})
+                            {full_data['journal']} ({full_data['year']}, IF: {full_data['impact_factor']})
                         </p>
-                        <div style="
-                            margin: 1rem 0;
-                            padding: 0.8rem;
-                            background: white;
-                            border-radius: 6px;
-                            border: 1px solid #e2e8f0;
-                        ">
+                        <div style="margin: 1rem 0; padding: 0.8rem; background: white; border-radius: 6px; border: 1px solid #e2e8f0;">
                             <span style="font-weight: 600;">📄 摘要:</span> 
                             <div style="color: #4a5568; margin-top: 0.4rem;">
-                                {zh_abstract}
+                                {full_data['zh_abstract']}
                             </div>
                         </div>
                         <div style="margin-top: 1rem;">
-                            <a href="https://pubmed.ncbi.nlm.nih.gov/{paper['pmid']}" 
+                            <a href="https://pubmed.ncbi.nlm.nih.gov/{full_data['pmid']}" 
                                target="_blank"
-                               style="
-                                   display: inline-block;
-                                   padding: 6px 12px;
-                                   background: #1a73e8;
-                                   color: white;
-                                   border-radius: 4px;
-                                   text-decoration: none;
-                                   margin-right: 8px;
-                               ">PubMed</a>
-                            <a href="https://doi.org/{paper['doi']}" 
-                               target="_blank"
-                               style="
-                                   display: inline-block;
-                                   padding: 6px 12px;
-                                   background: #38a169;
-                                   color: white;
-                                   border-radius: 4px;
-                                   text-decoration: none;
-                               ">Full Text</a>
+                               style="display: inline-block; padding: 6px 12px; background: #1a73e8; color: white; border-radius: 4px; text-decoration: none; margin-right: 8px;">
+                               PubMed
+                            </a>
+                            {f'<a href="https://doi.org/{full_data["doi"]}" target="_blank" style="display: inline-block; padding: 6px 12px; background: #38a169; color: white; border-radius: 4px; text-decoration: none;">Full Text</a>' if full_data['doi'] else ''}
                         </div>
                     </div>
                 </div>
                 """)
 
+        # 剩余部分保持不变...
         if all_translations:
             html_content = f"""
             <html>
-                <body style="
-                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-                    max-width: 700px;
-                    margin: 0 auto;
-                    padding: 2rem 1rem;
-                    background-color: #f7fafc;
-                ">
+                <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; max-width: 700px; margin: 0 auto; padding: 2rem 1rem; background-color: #f7fafc;">
                     <header style="text-align: center; margin-bottom: 2.5rem;">
-                        <h1 style="
-                            color: #1a365d;
-                            margin: 0 0 0.5rem 0;
-                            font-size: 1.8rem;
-                            display: flex;
-                            align-items: center;
-                            gap: 0.8rem;
-                            justify-content: center;
-                        ">
-                            <span style="
-                                background: #1a73e8;
-                                color: white;
-                                padding: 6px 12px;
-                                border-radius: 6px;
-                            ">📰 今日文献</span>
+                        <h1 style="color: #1a365d; margin: 0 0 0.5rem 0; font-size: 1.8rem; display: flex; align-items: center; gap: 0.8rem; justify-content: center;">
+                            <span style="background: #1a73e8; color: white; padding: 6px 12px; border-radius: 6px;">📰 今日文献</span>
                             <span>推送 ({len(all_translations)}篇)</span>
                         </h1>
                     </header>
                     {"".join(all_translations)}
-                    <footer style="
-                        margin-top: 3rem;
-                        text-align: center;
-                        color: #718096;
-                        font-size: 0.85rem;
-                        padding-top: 1.5rem;
-                        border-top: 1px solid #e2e8f0;
-                    ">
+                    <footer style="margin-top: 3rem; text-align: center; color: #718096; font-size: 0.85rem; padding-top: 1.5rem; border-top: 1px solid #e2e8f0;">
                         🚀 由论文助手自动生成 | 📧 反馈请联系 {EMAIL}
                     </footer>
                 </body>
@@ -335,6 +330,9 @@ def main():
             except:
                 pass
         print("\n=== 🏁 运行结束 ===")
+
+
+# 其他辅助函数保持不变...
 
 if __name__ == "__main__":
     main()
