@@ -15,6 +15,7 @@ jobs:
       GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
       BAIDU_APP_ID: ${{ secrets.BAIDU_APP_ID }}
       BAIDU_SECRET_KEY: ${{ secrets.BAIDU_SECRET_KEY }}
+      RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
       TZ: Asia/Shanghai # 设置时区
 
     steps:
