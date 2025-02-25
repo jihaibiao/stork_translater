@@ -30,7 +30,9 @@ EMAIL = os.getenv('GMAIL_ADDRESS')
 PASSWORD = os.getenv('GMAIL_APP_PASSWORD')
 BAIDU_APP_ID = os.getenv('BAIDU_APP_ID')
 BAIDU_SECRET_KEY = os.getenv('BAIDU_SECRET_KEY')
-assert all([EMAIL, PASSWORD, BAIDU_APP_ID, BAIDU_SECRET_KEY]), "环境变量未正确设置"
+RECIPIENT_EMAIL = os.getenv('RECIPIENT_EMAIL')
+# 验证环境变量（添加RECIPIENT_EMAIL检查）
+assert all([EMAIL, PASSWORD, BAIDU_APP_ID, BAIDU_SECRET_KEY, RECIPIENT_EMAIL]), "环境变量未正确设置"
 
 # ==== 配置信息 ====
 IMAP_SERVER = 'imap.gmail.com'
@@ -275,19 +277,19 @@ def fetch_stork_emails():
         raise
 
 
+# ==== 修改邮件发送函数 ====
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def send_summary_email(content):
     try:
         msg = MIMEText(content, 'html', 'utf-8')
         msg['Subject'] = Header('📚 每日论文摘要推送', 'utf-8')
         msg['From'] = Header(f"论文助手 <{EMAIL}>", 'utf-8')
-        msg['To'] = 'jihaibiao012@163.com'
+        msg['To'] = RECIPIENT_EMAIL  # 改为使用环境变量
 
-        # 使用更稳定的SMTP_SSL连接
         context = ssl.create_default_context()
         with smtplib.SMTP_SSL(SMTP_SERVER, 465, timeout=60, context=context) as server:
             server.login(EMAIL, PASSWORD)
-            server.sendmail(EMAIL, ['jihaibiao012@163.com'], msg.as_string())
+            server.sendmail(EMAIL, [RECIPIENT_EMAIL], msg.as_string())  # 同步修改这里
         print("📧 邮件发送成功！")
     except Exception as e:
         print(f"❌ 邮件发送失败: {str(e)}")
@@ -331,55 +333,97 @@ def main():
                     'zh_abstract': zh_abstract
                 }
 
-                # 生成HTML内容
+                # 在生成HTML的部分修改为：
                 all_translations.append(f"""
-                <div style="margin-bottom: 2rem; padding: 1.5rem; background: #f8faff; border-radius: 8px; box-shadow: 0 2px 12px rgba(28,87,223,0.1);">
-                    <!-- 原文信息 -->
-                    <div style="margin-bottom: 1.5rem;">
-                        <div style="font-size: 1.1rem; color: #2d3748; margin-bottom: 0.5rem;">
+                <div style="margin-bottom: 2rem; padding: 20px; 
+                            background: #ffffff; border-radius: 12px;
+                            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+                            border: 1px solid #e0e0e0;">
+                    <!-- 标题区 -->
+                    <div style="border-left: 4px solid #1a73e8; padding-left: 16px; margin-bottom: 20px;">
+                        <div style="font-size: 18px; color: #202124; 
+                                 line-height: 1.4; font-weight: 600;
+                                 margin-bottom: 8px;">
+                            {full_data['zh_title']}
+                        </div>
+                        <div style="font-size: 16px; color: #5f6368;">
                             {full_data['title']}
                         </div>
-                        <div style="color: #4a5568; font-size: 0.95rem;">
-                            <div>👤 {full_data['authors']}</div>
-                            <div>📚 {full_data['journal']} ({full_data['year']}, IF: {full_data['impact_factor']})</div>
-                        </div>
                     </div>
 
-                    <!-- 中文摘要区块 -->
-                    <div style="background: white; padding: 1.5rem; border-radius: 8px; border: 1px solid #e2e8f0;">
-                        <div style="margin-bottom: 1.5rem;">
-                            <div style="font-weight: 600; color: #1a73e8; margin-bottom: 0.5rem; font-size: 1.05rem;">
-                                中文标题
-                            </div>
-                            <div style="color: #2d3748; line-height: 1.5; font-size: 1.05rem;">
-                                {full_data['zh_title']}
+                    <!-- 元信息 -->
+                    <div style="margin-bottom: 20px; padding-left: 20px;">
+                        <div style="display: flex; align-items: center; margin-bottom: 12px;">
+                            <span style="font-size: 14px; color: #1a73e8; 
+                                      margin-right: 8px;">👤</span>
+                            <div style="font-size: 14px; color: #5f6368;">
+                                {full_data['authors']}
                             </div>
                         </div>
-
-                        <div style="border-top: 2px dashed #e2e8f0; padding-top: 1.5rem;">
-                            <div style="font-weight: 600; color: #1a73e8; margin-bottom: 0.5rem; font-size: 1.05rem;">
-                                中文摘要
-                            </div>
-                            <div style="color: #4a5568; line-height: 1.6; white-space: pre-wrap; font-size: 1.0rem;">
-                                {full_data['zh_abstract']}
+                        <div style="display: flex; align-items: center;">
+                            <span style="font-size: 14px; color: #1a73e8; 
+                                      margin-right: 8px;">📚</span>
+                            <div style="font-size: 16px; color: #5f6368;">
+                                {full_data['journal']} ({full_data['year']} IF: {full_data['impact_factor']})
                             </div>
                         </div>
                     </div>
 
-                    <!-- 操作链接 -->
-                    <div style="margin-top: 1.5rem; text-align: right;">
+                    <!-- 摘要区块 -->
+                    <div style="padding: 16px 20px; background: #f8f9fa; 
+                              border-radius: 8px; margin-bottom: 20px;">
+                        <div style="display: flex; margin-bottom: 12px;">
+                            <div style="width: 3px; height: 20px; 
+                                     background: #1a73e8; margin-right: 12px;"></div>
+                            <div style="font-size: 15px; color: #202124;
+                                     font-weight: 500;">
+                                摘要
+                            </div>
+                        </div>
+                        <div style="font-size: 16px; color: #5f6368;
+                                 line-height: 1.8; text-align: justify;
+                                 white-space: normal;">
+                            {full_data['zh_abstract']}
+                        </div>
+                    </div>
+
+                    <!-- 操作按钮 -->
+                    <div style="display: flex; gap: 12px; padding-left: 20px;">
                         <a href="https://pubmed.ncbi.nlm.nih.gov/{full_data['pmid']}" 
                            target="_blank"
-                           style="display: inline-block; padding: 8px 16px; 
-                                  background: #1a73e8; color: white; border-radius: 6px; 
-                                  text-decoration: none; margin-right: 10px; 
-                                  font-size: 0.95rem;">
-                            PubMed
+                           style="display: inline-flex; align-items: center;
+                                  padding: 8px 16px; background: #e8f0fe;
+                                  color: #1a73e8; border-radius: 20px;
+                                  text-decoration: none; font-size: 14px;
+                                  border: 1px solid #cbd5e1;">
+                            <span style="margin-right: 6px;">📖</span>
+                            PubMed链接
                         </a>
-                        {f'<a href="https://doi.org/{full_data["doi"]}" ...>全文链接</a>' if full_data['doi'] else ''}
+                        {f'<a href="https://doi.org/{full_data["doi"]}" ...>📚 杂志链接</a>' if full_data['doi'] else ''}
                     </div>
                 </div>
                 """)
+
+                # 邮件主体样式调整
+                html_content = f"""
+                <html>
+                    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                                background: #f1f3f4; margin: 0; padding: 20px;">
+                        <div style="max-width: 600px; margin: 0 auto;">
+                            <div style="text-align: center; margin-bottom: 30px;">
+                                <h1 style="color: #202124; font-size: 22px; 
+                                         margin: 24px 0 16px 0;">
+                                    📰 每日论文摘要
+                                </h1>
+                                <div style="font-size: 14px; color: #5f6368;">
+                                    {time.strftime("%Y-%m-%d")} 更新
+                                </div>
+                            </div>
+                            {"".join(all_translations)}
+                        </div>
+                    </body>
+                </html>
+                """
 
         if all_translations:
             html_content = f"""
