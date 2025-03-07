@@ -1,0 +1,6 @@
+# 环境变量文件
+.env
+.env.*
+
+# PyCharm 配置文件
+.idea/

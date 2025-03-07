@@ -96,40 +96,6 @@ class BaiduTranslator:
             return f"[翻译失败] {text[:200]}"
 
 
-def extract_paper_info(msg):
-    """增强版文献信息提取"""
-    body = ""
-    if msg.is_multipart():
-        for part in msg.walk():
-            content_type = part.get_content_type()
-            if content_type == "text/html":
-                body = part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                break
-    else:
-        body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
-
-    # 优化匹配模式，支持多文献
-    pattern = re.compile(
-        r'PMID:\s*(?P<pmid>\d+).*?'
-        r'impact\s*factor:\s*(?P<impact_factor>\d+\.?\d*)',
-        re.DOTALL
-    )
-
-    papers = []
-    seen_pmids = set()
-
-    for match in re.finditer(pattern, body.replace('\n', ' ')):
-        pmid = match.group('pmid')
-        if pmid not in seen_pmids:
-            papers.append({
-                'pmid': pmid,
-                'impact_factor': match.group('impact_factor')
-            })
-            seen_pmids.add(pmid)
-
-    print(f"提取到 {len(papers)} 篇论文信息")
-    return papers
-
 
 def extract_paper_info(msg):
     """增强版多文献提取（支持多关键词分组）"""
@@ -426,19 +392,21 @@ def main():
                 """
 
         if all_translations:
-            html_content = f"""
-            <html>
-                <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; 
-                            max-width: 800px; margin: 0 auto; padding: 2rem 1rem; background-color: #f7fafc;">
+            # 只保留这一个 html_content 生成代码块
+            if all_translations:
+                html_content = f"""
+                <html>
+                    <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif; 
+                                max-width: 800px; margin: 0 auto; padding: 2rem 1rem; background-color: #f7fafc;">
                     <header style="text-align: center; margin-bottom: 2.5rem;">
-                        <h1 style="color: #1a365d; margin: 0 0 0.5rem 0; font-size: 1.8rem;">
-                            📰 今日文献推送 ({len(all_translations)}篇)
-                        </h1>
+                    <h1 style="color: #1a365d; margin: 0 0 0.5rem 0; font-size: 1.8rem;">
+                    📰 今日文献推送 ({len(all_translations)}篇)
+                    </h1>
                     </header>
                     {"".join(all_translations)}
                     <footer style="margin-top: 3rem; text-align: center; color: #718096; 
                              font-size: 0.9rem; padding-top: 1.5rem; border-top: 1px solid #e2e8f0;">
-                        🚀 由论文助手自动生成 | 📧 反馈请联系 {EMAIL}
+                    🚀 由论文助手自动生成 | 📧 反馈请联系 {EMAIL}
                     </footer>
                 </body>
             </html>
