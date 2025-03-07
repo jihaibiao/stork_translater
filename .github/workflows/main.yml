@@ -1,0 +1,36 @@
+name: Daily Paper Digest
+
+on:
+  schedule:
+    # 每天UTC时间3:00和6:00执行（对应北京时间11:00和14:00）
+    - cron: '0 3,6 * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    
+    env:
+      GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+      GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+      BAIDU_APP_ID: ${{ secrets.BAIDU_APP_ID }}
+      BAIDU_SECRET_KEY: ${{ secrets.BAIDU_SECRET_KEY }}
+      RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      TZ: Asia/Shanghai # 设置时区
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run Paper Digest Script
+      run: python storktranslate_local.py # 替换为你的脚本文件名
