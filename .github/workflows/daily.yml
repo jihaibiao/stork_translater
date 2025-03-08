@@ -1,0 +1,31 @@
+name: Daily Paper Summary
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 每天运行
+  workflow_dispatch:      # 允许手动触发
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+    
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.x'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run script
+      env:
+        GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+        GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        BAIDU_APP_ID: ${{ secrets.BAIDU_APP_ID }}
+        BAIDU_SECRET_KEY: ${{ secrets.BAIDU_SECRET_KEY }}
+        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      run: python storktranslate_local.py

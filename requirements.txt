@@ -1,5 +1,7 @@
-requests==2.31.0
-beautifulsoup4==4.12.3
-biopython==1.83
-tenacity==8.2.3
-python-dotenv==1.0.0
+pandas
+beautifulsoup4
+biopython
+python-dotenv
+requests
+tenacity
+certifi
