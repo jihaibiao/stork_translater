@@ -11,7 +11,6 @@ import hashlib
 import requests
 from email.mime.text import MIMEText
 from email.header import Header
-
 import urllib3
 from Bio import Entrez
 from tenacity import retry, stop_after_attempt, wait_exponential, wait_fixed
@@ -19,6 +18,14 @@ import ssl
 import certifi
 from bs4 import BeautifulSoup
 import xml.etree.ElementTree as ET
+
+# ... 现有的导入 ...
+import urllib3
+from Bio import Entrez
+# 添加新的导入
+import pandas as pd
+from pathlib import Path
+# ... 其他导入 ...
 # 新增在文件顶部（所有import之后）
 from dotenv import load_dotenv
 load_dotenv()  # 加载本地.env文件
@@ -192,12 +199,16 @@ def get_pubmed_details(pmid):
                 authors.append(f"{fore} {last}".strip())
         author_str = ", ".join(authors[:3]) + (" et al." if len(authors) > 3 else "")
 
+        # 获取期刊分区
+        journal_quartile = get_journal_quartile(journal)
+        
         return {
             'title': title,
             'authors': author_str,
             'journal': journal,
             'year': year,
-            'doi': doi
+            'doi': doi,
+            'quartile': journal_quartile  # 添加分区信息
         }
     except Exception as e:
         print(f"❌ PubMed数据获取失败 PMID {pmid}: {str(e)}")
@@ -245,6 +256,11 @@ def fetch_stork_emails():
 
 # ==== 修改邮件发送函数 ====
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+# 修改邮件发送函数的重试策略和超时设置
+@retry(
+    stop=stop_after_attempt(5),  # 增加重试次数到5次
+    wait=wait_exponential(multiplier=1, min=4, max=30),  # 增加最大等待时间到30秒
+)
 def send_summary_email(content):
     try:
         msg = MIMEText(content, 'html', 'utf-8')
@@ -253,22 +269,55 @@ def send_summary_email(content):
         msg['To'] = RECIPIENT_EMAIL  # 改为使用环境变量
 
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(SMTP_SERVER, 465, timeout=60, context=context) as server:
+        # 增加超时时间到120秒
+        with smtplib.SMTP_SSL(SMTP_SERVER, 465, timeout=120, context=context) as server:
             server.login(EMAIL, PASSWORD)
-            server.sendmail(EMAIL, [RECIPIENT_EMAIL], msg.as_string())  # 同步修改这里
+            # 在发送前添加短暂延迟
+            time.sleep(2)
+            server.sendmail(EMAIL, [RECIPIENT_EMAIL], msg.as_string())
         print("📧 邮件发送成功！")
     except Exception as e:
         print(f"❌ 邮件发送失败: {str(e)}")
         raise
 
 
+# 在文件顶部导入部分添加
+from update_journal_data import update_scimagojr_data
+
+# 在 main 函数开始处添加数据更新检查
+def check_data_expiration():
+    """检查数据是否即将过期"""
+    metadata_file = Path(__file__).parent / 'scimagojr_metadata.json'
+    try:
+        if metadata_file.exists():
+            with open(metadata_file, 'r') as f:
+                metadata = json.load(f)
+            last_update = datetime.fromisoformat(metadata['last_update'])
+            days_remaining = 180 - (datetime.now() - last_update).days
+            
+            if 0 < days_remaining <= 14:  # 提前14天提醒
+                print(f"⚠️ 期刊数据将在 {days_remaining} 天后过期，请及时更新")
+                # 可以在这里添加发送提醒邮件的代码
+    except Exception as e:
+        print(f"检查数据过期时间失败: {str(e)}")
+
+# 在 main 函数中添加检查
 def main():
     try:
         print("\n=== 🚀 论文助手开始运行 ===")
+        
+        # 检查数据是否即将过期
+        check_data_expiration()
+        
+        # 检查并更新期刊数据
+        print("\n=== 检查期刊数据 ===")
+        update_scimagojr_data()
+        
+        # 原有的代码继续
         mail, email_ids = fetch_stork_emails()
         translator = BaiduTranslator(BAIDU_APP_ID, BAIDU_SECRET_KEY)
         all_translations = []
-
+        
         for e_id in email_ids:
             print(f"\n📨 处理邮件 {e_id.decode()}...")
             _, data = mail.fetch(e_id, '(RFC822)')
@@ -330,7 +379,7 @@ def main():
                             <span style="font-size: 14px; color: #1a73e8; 
                                       margin-right: 8px;">📚</span>
                             <div style="font-size: 16px; color: #5f6368;">
-                                {full_data['journal']} ({full_data['year']} IF: {full_data['impact_factor']})
+                                {full_data['journal']} ({full_data['year']} | {full_data['quartile']} | IF: {full_data['impact_factor']})
                             </div>
                         </div>
                     </div>
@@ -424,7 +473,32 @@ def main():
         print("\n=== 🏁 运行结束 ===")
 
 
-# 其他辅助函数保持原样...
+def get_journal_quartile(journal_name):
+    """获取期刊的分区信息"""
+    try:
+        # Scimagojr数据文件路径
+        data_file = Path(__file__).parent / 'scimagojr.csv'
+        
+        # 如果文件不存在，返回未知
+        if not data_file.exists():
+            return "Q未知"
+            
+        # 读取CSV文件
+        df = pd.read_csv(data_file)
+        
+        # 使用模糊匹配查找期刊
+        matches = df[df['Title'].str.lower().str.contains(journal_name.lower(), na=False)]
+        
+        if not matches.empty:
+            # 获取最新年份的分区信息
+            latest_data = matches.iloc[0]
+            quartile = latest_data['Quartile']
+            return f"Q{quartile}" if pd.notna(quartile) else "Q未知"
+        
+        return "Q未知"
+    except Exception as e:
+        print(f"获取期刊分区信息失败: {str(e)}")
+        return "Q未知"
 
 if __name__ == "__main__":
     main()
